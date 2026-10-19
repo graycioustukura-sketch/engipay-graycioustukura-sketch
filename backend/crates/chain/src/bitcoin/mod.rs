@@ -8,6 +8,7 @@ pub mod confirmations;
 pub mod cursor;
 pub mod sender;
 pub mod utxo;
+pub mod watch;
 
 pub use confirmations::{MIN_BITCOIN_CONFIRMATIONS, is_bitcoin_confirmed};
 pub use cursor::{BITCOIN_CHAIN_ID, BitcoinCursor, BitcoinCursorError};
@@ -19,3 +20,4 @@ pub use utxo::{
     ConfirmedTransaction, DetectedUtxo, ScriptPubKey, TxOutput, Txid, UtxoWatchError, UtxoWatcher,
     sats_to_money,
 };
+pub use watch::{BitcoinBlockSource, watch_bitcoin_loop};

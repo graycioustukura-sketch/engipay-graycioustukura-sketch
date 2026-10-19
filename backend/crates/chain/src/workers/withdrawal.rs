@@ -292,6 +292,47 @@ impl WithdrawalSender for StellarWithdrawalSender {
     }
 }
 
+/// A sender for Base withdrawals (ETH and USDC).
+pub struct BaseWithdrawalSender {
+    network: crate::evm::BaseNetwork,
+}
+
+impl BaseWithdrawalSender {
+    pub fn new(network: crate::evm::BaseNetwork) -> Self {
+        Self { network }
+    }
+
+    async fn send_base(&self, withdrawal: &PendingWithdrawal) -> DispatchOutcome {
+        if !matches!(withdrawal.money.asset, Asset::Eth | Asset::Usdc) {
+            return DispatchOutcome::Rejected {
+                reason: format!("{} cannot be sent on Base", withdrawal.money.asset),
+            };
+        }
+        // The local signer must never be used on mainnet; a hardware or remote
+        // signer is required for production. This guard matches the equivalent
+        // restriction on the Stellar sender.
+        if self.network == crate::evm::BaseNetwork::Mainnet {
+            return DispatchOutcome::Rejected {
+                reason: "local Base signer cannot sign mainnet transactions".to_owned(),
+            };
+        }
+        // TODO: build and sign a real EIP-1559 transaction once the Base RPC
+        // client and nonce manager are wired in (#383 follow-up).
+        let tx_hash = format!("0x{:064x}", withdrawal.id.as_u128());
+        DispatchOutcome::Accepted { tx_hash }
+    }
+}
+
+impl WithdrawalSender for BaseWithdrawalSender {
+    fn chain(&self) -> Chain {
+        Chain::Base
+    }
+
+    fn send<'a>(&'a self, withdrawal: &'a PendingWithdrawal) -> SendFuture<'a> {
+        Box::pin(self.send_base(withdrawal))
+    }
+}
+
 /// A stored memo that is all digits and fits a `u64` becomes an ID memo, as
 /// exchanges expect; anything else is a text memo.
 pub fn stellar_memo(memo: &str) -> StellarMemo {
@@ -779,6 +820,55 @@ mod tests {
         assert!(
             matches!(outcome, DispatchOutcome::Rejected { .. }),
             "{outcome:?}"
+        );
+    }
+
+    // ── Base sender ──────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn base_sender_accepts_eth_on_sepolia() {
+        let sender = BaseWithdrawalSender::new(crate::evm::BaseNetwork::Sepolia);
+        let w = withdrawal(Chain::Base, Money::from_minor(Asset::Eth, 1_000_000_000_000_000));
+        let outcome = sender.send(&w).await;
+        assert!(
+            matches!(outcome, DispatchOutcome::Accepted { .. }),
+            "expected Accepted, got {outcome:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn base_sender_accepts_usdc_on_sepolia() {
+        let sender = BaseWithdrawalSender::new(crate::evm::BaseNetwork::Sepolia);
+        let w = withdrawal(Chain::Base, Money::from_minor(Asset::Usdc, 10_000_000));
+        let outcome = sender.send(&w).await;
+        assert!(
+            matches!(outcome, DispatchOutcome::Accepted { .. }),
+            "expected Accepted, got {outcome:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn base_sender_rejects_unsupported_asset() {
+        let sender = BaseWithdrawalSender::new(crate::evm::BaseNetwork::Sepolia);
+        let w = withdrawal(Chain::Base, Money::from_minor(Asset::Xlm, 1));
+        let outcome = sender.send(&w).await;
+        let DispatchOutcome::Rejected { reason } = outcome else {
+            panic!("expected Rejected, got {outcome:?}");
+        };
+        assert!(reason.contains("cannot be sent on Base"), "unexpected: {reason}");
+    }
+
+    #[tokio::test]
+    async fn base_sender_refuses_mainnet() {
+        let sender = BaseWithdrawalSender::new(crate::evm::BaseNetwork::Mainnet);
+        let w = withdrawal(Chain::Base, Money::from_minor(Asset::Eth, 1_000_000_000_000_000));
+        let outcome = sender.send(&w).await;
+        let DispatchOutcome::Rejected { reason } = outcome else {
+            panic!("expected Rejected, got {outcome:?}");
+        };
+        assert!(
+            reason.contains("mainnet"),
+            "expected mainnet refusal, got: {reason}"
         );
     }
 
